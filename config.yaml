@@ -1,0 +1,32 @@
+affine_norm: true
+block_type: TransformerBlock
+d_model: 768
+drop_path: 0
+embed_dropout: 0
+gradient_checkpointing: true
+layer_norm_epsilon: 1.0e-05
+learnable_word_embeddings: true
+max_position_embeddings: 4096
+n_layers: 18
+num_heads: 1
+pad_vocab_size_multiple: 1
+pre_norm: true
+resid_dropout: 0
+sequence_mixer:
+  kwargs:
+    configs:
+    - kwargs:
+        kernel_size: 3
+        l_max: 4096
+      name: rebased.modules.base_conv.BaseConv
+    - kwargs:
+        feature_dim: 128
+        num_heads: 8
+        num_key_value_heads: 8
+      name: rebased.modules.rebased.ReBased
+  name: rebased.modules.hybrid.Hybrid
+state_mixer:
+  kwargs:
+    hidden_mult: 4
+  name: rebased.modules.mlp.MLP
+vocab_size: 50304
