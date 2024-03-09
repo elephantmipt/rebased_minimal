@@ -1,0 +1,6 @@
+torch
+torchvision
+einsum
+wandb
+triton>=2.2.0
+pyrallis
