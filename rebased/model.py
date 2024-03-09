@@ -3,22 +3,22 @@ from functools import partial
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import CrossEntropyLoss
 from torchvision.ops import StochasticDepth
-
-from .config import ModelConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 
 
 class TokenEmbeddings(nn.Module):
     def __init__(
-            self,
-            embed_dim,
-            vocab_size,
-            max_position_embeddings,
-            padding_idx=None,
-            word_embed_proj_dim=None,
-            learnable: bool = True,
-            device="cuda",
-            dtype="torch.float32",
+        self,
+        embed_dim,
+        vocab_size,
+        max_position_embeddings,
+        padding_idx=None,
+        word_embed_proj_dim=None,
+        learnable: bool = True,
+        device="cuda",
+        dtype="torch.float32",
     ):
         """
         GPT-2 Learnable Token and Position Embeddings.
@@ -59,7 +59,7 @@ class TokenEmbeddings(nn.Module):
         if self.max_position_embeddings > 0:
             if position_ids is None:
                 position_ids = torch.arange(
-                    seqlen, dtype=torch.long, device=input_ids.device
+                    seqlen, dtype=torch.long, device=self.device  # TODO
                 )
             position_embeddings = self.position_embeddings(position_ids)
             embeddings = embeddings + position_embeddings
@@ -67,10 +67,10 @@ class TokenEmbeddings(nn.Module):
 
 
 def _init_weights(
-        module,
-        n_layers,
-        initializer_range=0.02,
-        rescale_prenorm_residual=True,
+    module,
+    n_layers,
+    initializer_range=0.02,
+    rescale_prenorm_residual=True,
 ):
     if isinstance(module, nn.Linear):
         nn.init.normal_(module.weight, std=initializer_range)
@@ -94,14 +94,16 @@ def _init_weights(
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, config: ModelConfig, layer_idx: int):
+    def __init__(self, config, layer_idx: int):
         super().__init__()
 
         self.pre_norm: bool = config.pre_norm
-
+        kwargs = {}
+        if "Hybrid" in config.sequence_mixer.name:
+            kwargs = {"layer_idx": layer_idx}
         self.sequence_mixer = config.sequence_mixer.instantiate(
             d_model=config.d_model,
-            layer_idx=layer_idx,
+            **kwargs
         )
         self.state_mixer = config.state_mixer.instantiate(
             d_model=config.d_model,
@@ -117,54 +119,36 @@ class TransformerBlock(nn.Module):
         self.norm2 = nn.LayerNorm(config.d_model, elementwise_affine=config.affine_norm)
 
     def forward(self, hidden_states, residual=None):
+        dropped = self.drop_path1(self.dropout1(hidden_states))
+        residual = (dropped + residual.float()).to(dropped.dtype) if residual is not None else dropped
+
         if self.pre_norm:
-            # dropout -> + residual -> LN -> seq mixer -> dropout -> + residual -> LN -> state mixer
-            dropped = self.drop_path1(self.dropout1(hidden_states))
-            residual = (dropped + residual) if residual is not None else dropped
             hidden_states = self.norm1(
-                residual.to(dtype=self.norm1.weight.dtype)
-                if self.norm1.weight is not None
-                else residual
-            )
+                residual.to(dtype=self.norm1.weight.dtype) if self.norm1.weight is not None else residual)
+
             hidden_states = self.sequence_mixer(hidden_states)
-
             dropped = self.drop_path2(self.dropout2(hidden_states))
-            residual = (dropped + residual) if residual is not None else dropped
-            hidden_states = self.norm2(
-                residual.to(dtype=self.norm2.weight.dtype)
-                if self.norm2.weight is not None
-                else residual
-            )
-            hidden_states = self.state_mixer(hidden_states)
+            residual = (dropped + residual.float()).to(dropped.dtype) if residual is not None else dropped
 
+            hidden_states = self.norm2(
+                residual.to(dtype=self.norm2.weight.dtype) if self.norm2.weight is not None else residual)
+            hidden_states = self.state_mixer(hidden_states)
             return hidden_states, residual
         else:
-            # seq mixer -> dropout -> + residual -> LN -> state mixer -> dropout -> + residual -> LN
-            residual = residual if residual is not None else hidden_states
-
-            hidden_states = self.sequence_mixer(hidden_states)
-            dropped = self.drop_path1(self.dropout1(hidden_states))
-            hidden_states = dropped + residual
-            residual = self.norm1(
-                hidden_states.to(dtype=self.norm1.weight.dtype)
-                if self.norm1.weight is not None
-                else hidden_states
-            )
-
-            hidden_states = self.state_mixer(residual)
+            hidden_states = self.sequence_mixer(residual)
             dropped = self.drop_path2(self.dropout2(hidden_states))
-            hidden_states = dropped + residual
-            hidden_states = self.norm2(
-                hidden_states.to(dtype=self.norm2.weight.dtype)
-                if self.norm2.weight is not None
-                else hidden_states
-            )
+            residual = (dropped + residual.float()).to(dropped.dtype) if residual is not None else dropped
+            residual = self.norm1(
+                residual.to(dtype=self.norm1.weight.dtype) if self.norm1.weight is not None else residual)
 
+            hidden_states = (self.state_mixer(residual) + residual.float()).to(hidden_states.dtype)
+            hidden_states = self.norm2(
+                hidden_states.to(dtype=self.norm2.weight.dtype) if self.norm2.weight is not None else hidden_states)
             return hidden_states, None
 
 
 class LMBackbone(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         super().__init__()
         self.embeddings = TokenEmbeddings(
             config.d_model,
@@ -172,13 +156,12 @@ class LMBackbone(nn.Module):
             config.max_position_embeddings,
             learnable=config.learnable_word_embeddings,
         )
-
         if config.block_type == "TransformerBlock":
             block_cls = TransformerBlock
         elif config.block_type == "MambaBlock":
-            from src.mixers.mamba import MambaBlock
-            block_cls = MambaBlock
+            from aicl.model.zoology.mixers.mamba import MambaBlock
 
+            block_cls = MambaBlock
         self.layers = nn.ModuleList(
             [block_cls(config=config, layer_idx=i) for i in range(config.n_layers)]
         )
@@ -191,6 +174,7 @@ class LMBackbone(nn.Module):
             )
         )
         self.gradient_checkpointing = config.gradient_checkpointing
+        self.residual_in_fp32 = config.residuals_in_fp32
 
     def forward(self, input_ids, position_ids=None):
         hidden_states = self.embeddings(
@@ -201,7 +185,9 @@ class LMBackbone(nn.Module):
         for layer in self.layers:
             if self.gradient_checkpointing and self.training:
                 hidden_states, residual = torch.utils.checkpoint.checkpoint(
-                    layer.__call__, hidden_states, residual
+                    layer.__call__,
+                    hidden_states,
+                    residual
                 )
             else:
                 hidden_states, residual = layer(hidden_states, residual)
@@ -212,7 +198,7 @@ class LMBackbone(nn.Module):
 
 
 class LanguageModel(nn.Module):
-    def __init__(self, config: ModelConfig):
+    def __init__(self, config):
         super().__init__()
         if config.vocab_size % config.pad_vocab_size_multiple != 0:
             config.vocab_size += config.pad_vocab_size_multiple - (
@@ -233,10 +219,21 @@ class LanguageModel(nn.Module):
         # tie weights
         self.lm_head.weight = self.backbone.embeddings.word_embeddings.weight
 
-    def forward(self, input_ids, position_ids=None, state=None):
+    def forward(self, input_ids, labels=None, position_ids=None, state=None):
         hidden_states = self.backbone(input_ids, position_ids=position_ids)
-        return self.lm_head(hidden_states)
-    
-    def tie_weights(self):
-        self.lm_head.weight = self.backbone.embeddings.word_embeddings.weight
-    
+        lm_logits = self.lm_head(hidden_states)
+        if labels is not None:
+            # move labels to correct device to enable model parallelism
+            labels = labels.to(lm_logits.device)
+            # we are doing next-token prediction; shift prediction scores and input ids by one
+            shift_logits = lm_logits[:, :-1, :].contiguous()
+            labels = labels[:, 1:].contiguous()
+            loss_fct = CrossEntropyLoss()
+            lm_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), labels.view(-1))
+        else:
+            lm_loss = None
+
+        return CausalLMOutputWithPast(
+            loss=lm_loss,
+            logits=lm_logits
+        )

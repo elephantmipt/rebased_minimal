@@ -45,3 +45,4 @@ class ModelConfig:
 
     block_type: str = "TransformerBlock"
     log_scores: bool = False
+    residuals_in_fp32: bool = True

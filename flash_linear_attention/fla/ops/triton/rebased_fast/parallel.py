@@ -300,6 +300,7 @@ class ParallelBasedFunction(torch.autograd.Function):
         BTL, BTS = 128, 32
         assert BTL % BTS == 0
         # assert q.shape[-1] % 16 == 0
+        assert q.dtype == v.dtype
         BK = min(128, triton.next_power_of_2(k.shape[-1]))
         BV = min(128, triton.next_power_of_2(v.shape[-1]))
         BK, BV = max(BK, 16), max(BV, 16)
@@ -374,7 +375,7 @@ class ParallelBasedFunction(torch.autograd.Function):
 triton_parallel_based = ParallelBasedFunction.apply
 
 
-def parallel_rebased(q, k, v, eps, use_scale=True, use_normalize=True, return_both=False):
+def parallel_rebased(q, k, v, eps: float = 1e-6, use_scale: bool = True, use_normalize: bool = True, return_both: bool = False):
     assert q.shape[-1] <= 128, "only support feature dim up to 128"
     if use_scale:
         scale = q.shape[-1] ** -0.5

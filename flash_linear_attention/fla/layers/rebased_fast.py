@@ -6,7 +6,6 @@ https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py
 """
 import math
 
-import opt_einsum as oe
 import torch
 import torch.nn as nn
 from einops import rearrange
@@ -199,31 +198,31 @@ if __name__ == '__main__':
 
     starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
 
-    for d_model in [16, 64]:
-        model = ReBasedLinearAttention(d_model=d_model).to(dtype).cuda()
-        for seq_len in [256, 1024, 4096]:
-            timings_f = []
-            timings_b = []
-            for i in range(100):
-                x = torch.randn(batch, seq_len, d_model).to(
-                    dtype).cuda().requires_grad_(True)
-                dy = torch.randn(batch, seq_len, d_model).to(
-                    dtype).cuda()
-
-                starter.record()
-                y = model(x)
-                ender.record()
-                # WAIT FOR GPU SYNC
-                torch.cuda.synchronize()
-                curr_time = starter.elapsed_time(ender)
-                timings_f.append(curr_time)
-
-                starter.record()
-                y.backward(dy)
-                ender.record()
-
-                torch.cuda.synchronize()
-                curr_time = starter.elapsed_time(ender)
-                timings_b.append(curr_time)
-
-            print(f"fseq len {seq_len}, d_model {d_model}, forward time: {sum(timings_f) / len(timings_f)}, backward time: {sum(timings_b) / len(timings_b)}")
+    # for d_model in [16, 64]:
+    #     model = ReBasedLinearAttention(d_model=d_model).to(dtype).cuda()
+    #     for seq_len in [256, 1024, 4096]:
+    #         timings_f = []
+    #         timings_b = []
+    #         for i in range(100):
+    #             x = torch.randn(batch, seq_len, d_model).to(
+    #                 dtype).cuda().requires_grad_(True)
+    #             dy = torch.randn(batch, seq_len, d_model).to(
+    #                 dtype).cuda()
+    #
+    #             starter.record()
+    #             y = model(x)
+    #             ender.record()
+    #             # WAIT FOR GPU SYNC
+    #             torch.cuda.synchronize()
+    #             curr_time = starter.elapsed_time(ender)
+    #             timings_f.append(curr_time)
+    #
+    #             starter.record()
+    #             y.backward(dy)
+    #             ender.record()
+    #
+    #             torch.cuda.synchronize()
+    #             curr_time = starter.elapsed_time(ender)
+    #             timings_b.append(curr_time)
+    #
+    #         print(f"fseq len {seq_len}, d_model {d_model}, forward time: {sum(timings_f) / len(timings_f)}, backward time: {sum(timings_b) / len(timings_b)}")

@@ -6,7 +6,6 @@ https://github.com/HazyResearch/zoology/blob/main/zoology/mixers/based.py
 """
 import math
 
-import opt_einsum as oe
 import torch
 import torch.nn as nn
 from einops import rearrange
